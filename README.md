@@ -7,7 +7,7 @@
 
 ​	To overcome these limitations, we introduce DOUBLE-BENCH: a new large-scale, multilingual, and multimodal evaluation system that is able to produce fine-grained assessment to each component within document RAG systems. It comprises 3,276 documents (72,880 pages) and 5,168 single- and multi-hop queries across 6 languages and 4 document types with streamlined dynamic update support for potential data contamination issues. Queries are grounded in exhaustively scanned evidence pages and verified by human experts to ensure maximum quality and completeness. We hope our fully open-source DOUBLE-BENCH provide a rigorous foundation for future research in advanced document RAG systems. 
 
-![](asset\pipeline.png)
+![](asset/pipeline.png)
 
 
 
