@@ -54,7 +54,7 @@ We save our benchmark  in `./Double_Bench.`
     }
 ```
 
-- This is an example of a multi-hop question in our CDOCRAG-BENCH benchmark. It includes top-level information for the final query and a `steps` section that breaks down the reasoning process into individual sub-questions.
+- This is an example of a multi-hop question in our Double-Bench benchmark. It includes top-level information for the final query and a `steps` section that breaks down the reasoning process into individual sub-questions.
 	- **`uid`**: The unique identifier for the data point.
 	- **`question`**: The final, complex multi-hop query.
 	- **`answer`**: The final reference answer to the multi-hop query.
