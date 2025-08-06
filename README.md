@@ -2,6 +2,10 @@
 
 # Double-Bench
 
+<div align="center">
+📖<a href="http://arxiv.org/abs/2508.03644">Paper</a> | 🏠<a href="https://double-bench.github.io/">Homepage</a> | 🤗<a href="https://huggingface.co/datasets/Episoode/Double-Bench">Huggingface</a>
+</div>
+
 ## 🚀Overview
 ​         Retrieval-Augmented Generation (RAG) systems using Multi-modal Large Language Models (MLLMs) show great promisefor complex document understanding, yet their development is critically hampered by inadequate evaluation. Current benchmarks often focus on specific part of document RAG system and use synthetic data with incomplete ground truth and evidence labels, therefore failing to reflect real-world bottlenecks and challenges. 
 
