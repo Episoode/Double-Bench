@@ -1,11 +1,11 @@
 
 
-# DoubleBench
+# Double-Bench
 
 ## 🚀Overview
 ​         Retrieval-Augmented Generation (RAG) systems using Multi-modal Large Language Models (MLLMs) show great promisefor complex document understanding, yet their development is critically hampered by inadequate evaluation. Current benchmarks often focus on specific part of document RAG system and use synthetic data with incomplete ground truth and evidence labels, therefore failing to reflect real-world bottlenecks and challenges. 
 
-​	To overcome these limitations, we introduce DOUBLE-BENCH: a new large-scale, multilingual, and multimodal evaluation system that is able to produce fine-grained assessment to each component within document RAG systems. It comprises 3,276 documents (72,880 pages) and 5,168 single- and multi-hop queries across 6 languages and 4 document types with streamlined dynamic update support for potential data contamination issues. Queries are grounded in exhaustively scanned evidence pages and verified by human experts to ensure maximum quality and completeness. We hope our fully open-source DOUBLE-BENCH provide a rigorous foundation for future research in advanced document RAG systems. 
+​	To overcome these limitations, we introduce Double-Bench: a new large-scale, multilingual, and multimodal evaluation system that is able to produce fine-grained assessment to each component within document RAG systems. It comprises 3,276 documents (72,880 pages) and 5,168 single- and multi-hop queries across 6 languages and 4 document types with streamlined dynamic update support for potential data contamination issues. Queries are grounded in exhaustively scanned evidence pages and verified by human experts to ensure maximum quality and completeness. We hope our fully open-source Double-Bench provide a rigorous foundation for future research in advanced document RAG systems. 
 
 ![](asset/pipeline.png)
 
@@ -13,7 +13,7 @@
 
 ## 💡 Highlights
 
-- 🔥   **Large-scale, Multimodal & Multilingual**: Introduces DOUBLE-BENCH, a large-scale benchmark featuring 3,276 documents (72,880 pages) across 4 document types and 6 languages.
+- 🔥   **Large-scale, Multimodal & Multilingual**: Introduces Double-Bench, a large-scale benchmark featuring 3,276 documents (72,880 pages) across 4 document types and 6 languages.
 
 - 🔥   **High-Quality Queries & Annotations**: Features 5,168 high-quality single- and multi-hop queries generated through iterative, clarity-focused refinement and knowledge-graph-guided synthesis. All ground-truth evidence is exhaustively verified by human experts to ensure maximum precision and completeness.
 - 🔥   **Comprehensive Evaluation & In-depth Insights**: Conducts extensive experiments on 9 state-of-the-art embedding models, 4 MLLMs, and 4 advanced document RAG frameworks. The findings uncover critical bottlenecks, such as the "overconfidence dilemma" , and provide a rigorous foundation for future research.
@@ -25,7 +25,7 @@
 
 We save our benchmark  in `./Double_Bench.`
 
-- This is an example of a single-hop question in our CDOCRAG-BENCH benchmark. It includes 
+- This is an example of a single-hop question in our Double-Bench benchmark. It includes 
   - **`uid`**: The unique identifier for the data point.
   - **`question`**: The specific text of the query.
   - **`answer`**: The reference answer .
@@ -37,7 +37,7 @@ We save our benchmark  in `./Double_Bench.`
   - **`doc_type`**: The classification or type of the source document.
 
 ```
-	{
+    {
         "uid": "0962",
         "question": "What does the historical population data suggest about demographic changes in Yorkton from 1901 to 2021?",
         "answer": "The historical population data indicates a significant increase in Yorkton's population from 700 in 1901 to 16,280 in 2021, reflecting substantial demographic growth over the 120-year span.",
@@ -66,7 +66,7 @@ We save our benchmark  in `./Double_Bench.`
     - **`reference_page`**: A list of evidence pages for that specific step.
 
 ```
-{
+    {
         "uid": "1110",
         "question": "What significantly reduces the incidence and severity of the condition that the drug evaluated in the pilot evaluation for treating hot flashes has been shown to reduce in phase II trials by 75% to 90% in clinical trials?",
         "answer": "Hormone therapy",
