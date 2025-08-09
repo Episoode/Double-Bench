@@ -100,3 +100,14 @@ We save our benchmark  in `./Double_Bench.`
     }
 ```
 
+## 📌Citation
+If you find this dataset useful for your research, please cite the following paper:
+
+```bibtex
+@article{shen2025we,
+  title={Are We on the Right Way for Assessing Document Retrieval-Augmented Generation?},
+  author={Shen, Wenxuan and Wang, Mingjia and Wang, Yaochen and Chen, Dongping and Yang, Junjie and Wan, Yao and Lin, Weiwei},
+  journal={arXiv preprint arXiv:2508.03644},
+  year={2025}
+}
+```
