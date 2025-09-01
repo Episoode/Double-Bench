@@ -1,0 +1,8 @@
+defaults:
+  - base
+  - _self_
+
+model_type: image
+model_name: ColpaliRetrieval
+embed_dir: ./tmp/${retrieval.model_name}/${retrieval.image_question_key}
+batch_size: 2

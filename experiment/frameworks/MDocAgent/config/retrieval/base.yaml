@@ -1,0 +1,13 @@
+model_type: haha
+model_name: empty
+class_path: retrieval.${retrieval.model_type}_retrieval.${retrieval.model_name}
+
+top_k: 10
+doc_key: doc_id
+text_question_key: question
+image_question_key: question
+r_text_key: text-top-${retrieval.top_k}-${retrieval.text_question_key}
+r_image_key: image-top-${retrieval.top_k}-${retrieval.image_question_key}
+r_mix_key: mix-top-${retrieval.top_k}-${retrieval.mix_question_key}
+r_text_index_key: text-index-path-${retrieval.text_question_key}
+cuda_visible_devices: '0'

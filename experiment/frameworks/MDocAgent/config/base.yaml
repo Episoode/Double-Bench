@@ -1,0 +1,40 @@
+# The structure of retrieval and multi_agents can be modified in this yaml file
+# agent and model configurations should be modified in their respective config folders
+
+defaults:
+  - retrieval: text # Change this to text/image when configuring retrieval
+  - _self_
+
+run-name: mmlb-MDA # Experiment name
+
+dataset:
+  top_k: 1 # Top-k results used during inference
+
+retrieval:
+  top_k: 10 # Top-k results returned during retrieval
+  cuda_visible_devices: '0'
+
+mdoc_agent:
+  cuda_visible_devices: '0,1,2,3'
+  truncate_len: null # Used for debugging; set to null for normal use
+  save_freq: 10 # Frequency of saving checkpoints
+  ans_key: ans_${run-name} # Key name for generated answers during prediction
+  save_message: false # Set to true to record responses from all agents
+
+  agents:
+    - agent: image_agent # Configures prompt and controls whether to use text/image as reference material
+      model: qwen2vl # Configures the model to use
+    - agent: text_agent
+      model: llama31
+    - agent: general_agent
+      model: qwen2vl
+  
+  sum_agent:
+    agent: sum_agent # Responsible for summarizing answers from all agents
+    model: qwen2vl
+
+eval_agent: # Used for result evaluation
+  truncate_len: null # Used for debugging; set to null for normal use
+  ans_key: ans_${run-name}
+  agent: base
+  model: openai

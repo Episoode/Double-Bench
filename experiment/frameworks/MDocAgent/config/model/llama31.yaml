@@ -1,0 +1,7 @@
+defaults:
+  - base
+  - _self_
+
+model_id: meta-llama/Meta-Llama-3.1-8B-Instruct
+module_name: models.llama
+class_name: Llama3

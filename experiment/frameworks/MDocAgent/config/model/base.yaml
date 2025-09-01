@@ -1,0 +1,5 @@
+model_id: haha_this_is_empty
+module_name: haha
+class_name: empty
+max_new_tokens: 256
+temperature: 0
