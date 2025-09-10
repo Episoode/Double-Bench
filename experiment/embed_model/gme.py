@@ -23,7 +23,7 @@ class MultimodalVectorDB:
     def __init__(
             self,
             model_name: str = "Alibaba-NLP/gme-Qwen2-VL-2B-Instruct",
-            device: str = "cuda:0",
+            device: str = "cuda",
             batch_size: int = 16
     ):
         """Initialize the multimodal vector database."""
@@ -40,10 +40,38 @@ class MultimodalVectorDB:
         self.t2i_prompt = 'Find an image that matches the given text.'
         self.i2t_prompt = 'Find text that matches the given image.'
 
-    def read_folder_paths(self, txt_path: str) -> List[str]:
-        """Read folder paths from txt file."""
-        with open(txt_path, 'r', encoding='utf-8') as f:
-            return [line.strip() for line in f if line.strip()]
+    def scan_directory_structure(self, root_dir: str) -> List[str]:
+        """
+        Scan the directory structure and return all document folders
+        Expected structure: root_dir/language/document_id/files
+        """
+        document_folders = []
+
+        if not os.path.exists(root_dir):
+            raise ValueError(f"Root directory does not exist: {root_dir}")
+
+        for language_folder in os.listdir(root_dir):
+            language_path = os.path.join(root_dir, language_folder)
+
+            if not os.path.isdir(language_path):
+                continue
+
+            for document_folder in os.listdir(language_path):
+                document_path = os.path.join(language_path, document_folder)
+
+                if not os.path.isdir(document_path):
+                    continue
+
+                has_files = False
+                for ext in ["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.tiff", "*.txt"]:
+                    if glob(os.path.join(document_path, ext)):
+                        has_files = True
+                        break
+
+                if has_files:
+                    document_folders.append(document_path)
+
+        return document_folders
 
     def get_image_files(self, folder_paths: List[str]) -> List[str]:
         """Get all image files from the folders."""
@@ -114,14 +142,20 @@ class MultimodalVectorDB:
             except Exception as e:
                 print(f"Error processing text batch: {e}")
 
-    def build_database(self, txt_path: str, data_type: str = 'auto'):
-        """Build vector database."""
-        folder_paths = self.read_folder_paths(txt_path)
-        print(f"Read {len(folder_paths)} folder paths from {txt_path}")
+    def build_database(self, root_dir: str, data_type: str = 'auto'):
+        """Build vector database from root directory structure."""
+        document_folders = self.scan_directory_structure(root_dir)
+        print(f"Found {len(document_folders)} document folders in {root_dir}")
+
         if data_type in ['auto', 'image']:
-            self.process_images(self.get_image_files(folder_paths))
+            image_files = self.get_image_files(document_folders)
+            if image_files:
+                self.process_images(image_files)
+
         if data_type in ['auto', 'text']:
-            self.process_texts(self.get_text_files(folder_paths))
+            text_files = self.get_text_files(document_folders)
+            if text_files:
+                self.process_texts(text_files)
 
     def save_database(self, output_dir: str):
         """Save vector database to disk."""
@@ -162,10 +196,12 @@ class MultimodalVectorDB:
         try:
             if query_type == 'text':
                 instruction = self.t2i_prompt if target_type == 'image' else None
-                query_embedding = self.model.get_text_embeddings(texts=[query], instruction=instruction)[0].cpu().numpy()
+                query_embedding = self.model.get_text_embeddings(texts=[query], instruction=instruction)[
+                    0].cpu().numpy()
             elif query_type == 'image':
                 instruction = self.i2t_prompt if target_type == 'text' else None
-                query_embedding = self.model.get_image_embeddings(images=[query], instruction=instruction, is_query=True)[0].cpu().numpy()
+                query_embedding = \
+                self.model.get_image_embeddings(images=[query], instruction=instruction, is_query=True)[0].cpu().numpy()
             else:
                 raise ValueError("query_type must be 'text' or 'image'")
 
@@ -202,6 +238,16 @@ class MultimodalVectorDB:
             return []
 
 
+def embed_and_index_files(root_dir: str, output_dir: str, device: str, data_type: str = 'auto'):
+    """
+    Embed and index files from a root directory structure
+    Expected structure: root_dir/language/document_id/files
+    """
+    db = MultimodalVectorDB(device=device)
+    db.build_database(root_dir, data_type)
+    db.save_database(output_dir)
+
+
 def process_json_and_save(json_path: str, output_json_path: str, db_dir: str, device: str = "cuda:0"):
     """
     Read a JSON file, perform batch retrieval for each query, and save results.
@@ -232,32 +278,37 @@ def process_json_and_save(json_path: str, output_json_path: str, db_dir: str, de
 
 
 def main():
+    """Main function to handle command line arguments"""
     parser = argparse.ArgumentParser(description='Multimodal Vector Database System')
-    subparsers = parser.add_subparsers(dest='command', help='Available commands', required=True)
 
-    build_parser = subparsers.add_parser('build', help='Build the vector database')
-    build_parser.add_argument('--txt_path', type=str, required=True, help='Txt file with folder paths')
-    build_parser.add_argument('--output_dir', type=str, required=True, help='Output directory')
-    build_parser.add_argument('--data_type', type=str, choices=['auto', 'image', 'text'], default='auto', help='Data type')
-    build_parser.add_argument('--device', type=str, default='cuda:0', help='CUDA device')
-    build_parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
+    parser.add_argument('--mode', type=str, choices=['embed', 'process_json'], required=True,
+                        help='Mode: embed (embedding and indexing), process_json (batch process JSON)')
+    parser.add_argument('--device', type=str, default='cuda:0', help='Device to use (e.g., cuda:0, cuda:1)')
+    parser.add_argument('--output_dir', type=str,
+                        help='[embed mode] Output directory for index, or [process_json mode] directory for loading index')
 
-    process_parser = subparsers.add_parser('process_json', help='Read JSON, batch retrieve, and save results')
-    process_parser.add_argument('--json_path', type=str, required=True, help='Input JSON file with queries')
-    process_parser.add_argument('--db_dir', type=str, required=True, help='Database directory')
-    process_parser.add_argument('--output_json', type=str, required=True, help='Output JSON file for results')
-    process_parser.add_argument('--device', type=str, default='cuda:0', help='CUDA device')
+    # Args for 'embed' mode
+    parser.add_argument('--root_dir', type=str,
+                        help='[embed mode] Root directory containing language/document_id/files structure')
+    parser.add_argument('--data_type', type=str, choices=['auto', 'image', 'text'], default='auto',
+                        help='[embed mode] Type of data to process')
+    parser.add_argument('--batch_size', type=int, default=16, help='[embed mode] Batch size for processing')
+
+    # Args for 'process_json' mode
+    parser.add_argument('--json_file', type=str, help='[process_json mode] Input JSON file')
+    parser.add_argument('--output_json', type=str, help='[process_json mode] Output JSON file')
 
     args = parser.parse_args()
 
-    if args.command == 'build':
-        db = MultimodalVectorDB(device=args.device, batch_size=args.batch_size)
-        db.build_database(args.txt_path, args.data_type)
-        db.save_database(args.output_dir)
-    elif args.command == 'process_json':
-        process_json_and_save(args.json_path, args.output_json, args.db_dir, args.device)
-    else:
-        parser.print_help()
+    if args.mode == 'embed':
+        if not all([args.root_dir, args.output_dir]):
+            parser.error("Embed mode (--mode embed) requires --root_dir and --output_dir arguments.")
+        embed_and_index_files(args.root_dir, args.output_dir, args.device, args.data_type)
+    elif args.mode == 'process_json':
+        if not all([args.output_dir, args.json_file, args.output_json]):
+            parser.error(
+                "Process_json mode (--mode process_json) requires --output_dir, --json_file, and --output_json arguments.")
+        process_json_and_save(args.json_file, args.output_json, args.output_dir, args.device)
 
 
 if __name__ == "__main__":

@@ -15,13 +15,11 @@ class ImageEmbeddingSystem:
             self,
             model_name: str = "llamaindex/vdr-2b-multi-v1",
             device: str = "cuda",
-            cache_folder: str = "/path/to/your/model/cache/",
             batch_size: int = 128
     ):
         """Initialize image embedding system"""
         self.model_name = model_name
         self.device = device
-        self.cache_folder = cache_folder
         self.batch_size = batch_size
 
         # Load model
@@ -29,18 +27,48 @@ class ImageEmbeddingSystem:
             model_name=model_name,
             device=device,
             trust_remote_code=True,
-            cache_folder=cache_folder
         )
 
         self.path_to_id: Dict[str, int] = {}
         self.id_to_path: Dict[int, str] = {}
         self.embeddings: List[List[float]] = []
 
-    def read_folder_paths(self, txt_path: str) -> List[str]:
-        """Read folder paths from txt file"""
-        with open(txt_path, 'r') as f:
-            folder_paths = [line.strip() for line in f if line.strip()]
-        return folder_paths
+    def scan_directory_structure(self, root_dir: str) -> List[str]:
+        """
+        Scan the directory structure and return all document folders
+        Expected structure: root_dir/language/document_id/images
+        """
+        document_folders = []
+
+        if not os.path.exists(root_dir):
+            raise ValueError(f"Root directory does not exist: {root_dir}")
+
+        # Iterate through language folders
+        for language_folder in os.listdir(root_dir):
+            language_path = os.path.join(root_dir, language_folder)
+
+            # Skip if not a directory
+            if not os.path.isdir(language_path):
+                continue
+
+            # Iterate through document folders within each language folder
+            for document_folder in os.listdir(language_path):
+                document_path = os.path.join(language_path, document_folder)
+
+                # Skip if not a directory
+                if not os.path.isdir(document_path):
+                    continue
+
+                # Check if this document folder contains images
+                has_images = False
+                jpg_files = glob(os.path.join(document_path, "*.jpg"))
+                if jpg_files:
+                    has_images = True
+
+                if has_images:
+                    document_folders.append(document_path)
+
+        return document_folders
 
     def get_image_paths(self, folder_paths: List[str]) -> List[str]:
         """Get all jpg image paths from the folders"""
@@ -124,14 +152,29 @@ class ImageEmbeddingSystem:
             print(f"Error processing query '{query_text}': {e}")
             return []
 
-def embed_and_index_images(txt_path: str, output_dir: str, device: str = "cuda"):
-    """Read folder paths from txt, embed all images and create index"""
+def embed_and_index_images(root_dir: str, output_dir: str, device: str = "cuda"):
+    """
+    Embed and index images from a root directory structure
+    Expected structure: root_dir/language/document_id/images
+    """
     system = ImageEmbeddingSystem(device=device)
-    folder_paths = system.read_folder_paths(txt_path)
-    print(f"Read {len(folder_paths)} folder paths from {txt_path}")
-    image_paths = system.get_image_paths(folder_paths)
+
+    # Scan directory structure to find all document folders
+    document_folders = system.scan_directory_structure(root_dir)
+    print(f"Found {len(document_folders)} document folders in {root_dir}")
+
+    # Get all image paths from document folders
+    image_paths = system.get_image_paths(document_folders)
     print(f"Found {len(image_paths)} JPG images")
+
+    if len(image_paths) == 0:
+        print("No images found. Please check your directory structure.")
+        return
+
+    # Process images and create embeddings
     system.process_images(image_paths)
+
+    # Save everything to disk
     system.save_to_disk(output_dir)
     return system
 
@@ -152,7 +195,8 @@ def main():
     parser = argparse.ArgumentParser(description='Image Embedding and Retrieval System')
     parser.add_argument('--mode', type=str, required=True, choices=['embed', 'search'],
                         help='Operation mode: embed (embedding and indexing) or search (search)')
-    parser.add_argument('--txt_path', type=str, help='Txt file containing folder paths')
+    parser.add_argument('--root_dir', type=str,
+                        help='Root directory containing language/document_id/images structure')
     parser.add_argument('--output_dir', type=str, required=True, help='Output/index directory')
     parser.add_argument('--query', type=str, help='Query text for search mode')
     parser.add_argument('--top_k', type=int, default=5, help='Number of most similar results to return')
@@ -161,9 +205,9 @@ def main():
     args = parser.parse_args()
 
     if args.mode == 'embed':
-        if not args.txt_path:
-            parser.error("Embed mode requires --txt_path argument")
-        embed_and_index_images(args.txt_path, args.output_dir, args.device)
+        if not args.root_dir:
+            parser.error("Embed mode requires --root_dir argument")
+        embed_and_index_images(args.root_dir, args.output_dir, args.device)
     elif args.mode == 'search':
         if not args.query:
             parser.error("Search mode requires --query argument")

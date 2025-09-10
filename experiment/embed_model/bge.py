@@ -9,43 +9,84 @@ from tqdm import tqdm
 from typing import List, Tuple, Dict
 import argparse
 from sentence_transformers import SentenceTransformer
+import multiprocessing
+from functools import partial
+
+# Set multiprocessing start method for cross-platform compatibility
+def set_multiprocessing_start_method():
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        # Already set, can be safely ignored
+        pass
 
 class DocumentPageEmbeddingSystem:
     def __init__(
             self,
-            model_name: str = "/path/to/your/bge-m3",#BAAI/bge-m3
+            model_name: str = "BAAI/bge-m3",
             device: str = "cuda",
-            batch_size: int = 8
+            batch_size: int = 8,
+            max_seq_length: int = 8192
     ):
-        """Initialize Document Page Embedding System"""
+        """Initialize document page embedding system"""
         self.model_name = model_name
         self.device = device
         self.batch_size = batch_size
+        self.max_seq_length = max_seq_length
 
-        print(f"Loading {model_name} model using sentence-transformers ...")
-        self.model = SentenceTransformer(model_name, device=device)
+        # Load model in main process only
+        if multiprocessing.current_process().name == 'MainProcess':
+            self.model = SentenceTransformer(
+                model_name,
+                trust_remote_code=True,
+                device=device
+            )
+            self.model.max_seq_length = max_seq_length
+        else:
+            self.model = None  # Subprocesses will load their own model
 
         self.path_to_id: Dict[str, int] = {}
         self.id_to_path: Dict[int, str] = {}
         self.embeddings: List[np.ndarray] = []
-        self.index = None  # For storing loaded FAISS index
-        print("Model loaded successfully.")
+        self.index = None  # FAISS index
 
-    def read_folder_paths(self, txt_path: str) -> List[str]:
-        """Read folder paths from a txt file"""
-        with open(txt_path, 'r') as f:
-            folder_paths = [line.strip() for line in f if line.strip()]
-        return folder_paths
+        # Multi-GPU support
+        self.multi_gpu_mode = False
+        self.devices = [device]
 
-    def process_document_pages(self, doc_paths: List[str]) -> None:
-        """Process document pages and generate embeddings (batch optimized)"""
-        print(f"Start processing {len(doc_paths)} documents...")
+    def get_document_paths(self, ocr_dir: str) -> List[str]:
+        """Get all document paths from OCR directory structure: ocr/language/doc1"""
+        doc_paths = []
+        for language_dir in os.listdir(ocr_dir):
+            language_path = os.path.join(ocr_dir, language_dir)
+            if os.path.isdir(language_path):
+                for doc_name in os.listdir(language_path):
+                    doc_path = os.path.join(language_path, doc_name)
+                    if os.path.isdir(doc_path):
+                        # Check if this doc has text, table_text, figure_text folders
+                        text_dir = os.path.join(doc_path, 'text')
+                        if os.path.exists(text_dir):
+                            doc_paths.append(doc_path)
+        return doc_paths
+
+    def enable_multi_gpu(self, devices: List[str]):
+        """Enable multi-GPU processing mode"""
+        if len(devices) > 1 and all('cuda' in d for d in devices):
+            self.multi_gpu_mode = True
+            self.devices = devices
+        else:
+            pass
+
+    @staticmethod
+    def _process_document_batch(doc_paths: List[str], model_name: str, max_seq_length: int, device: str, temp_dir: str):
+        """Batch process a set of documents on a single GPU (static method for multiprocessing)"""
+        local_model = SentenceTransformer(model_name, trust_remote_code=True, device=device)
+        local_model.max_seq_length = max_seq_length
+
         all_page_texts, all_page_index_paths = [], []
-        print("Step 1/3: Aggregating all page texts...")
-        for doc_path in tqdm(doc_paths, desc="Aggregating pages"):
-            ocr_path = doc_path.replace('docs', 'ocr', 1)
 
-            main_text_files = sorted(glob(os.path.join(ocr_path, 'text', '*.txt')),
+        for doc_path in tqdm(doc_paths, desc=f"Processing ({device})", position=int(device.split(':')[-1])):
+            main_text_files = sorted(glob(os.path.join(doc_path, 'text', '*.txt')),
                                      key=lambda x: int(os.path.basename(x).split('.')[0]))
             for page_file in main_text_files:
                 try:
@@ -53,48 +94,125 @@ class DocumentPageEmbeddingSystem:
                     with open(page_file, 'r', encoding='utf-8', errors='ignore') as f:
                         main_text = f.read().strip()
                     table_text = ""
-                    for t_file in glob(os.path.join(ocr_path, 'table_text', f'{page_number}_*.txt')):
+                    for t_file in glob(os.path.join(doc_path, 'table_text', f'{page_number}_*.txt')):
                         with open(t_file, 'r', encoding='utf-8', errors='ignore') as f:
                             table_text += f.read().strip() + "\n"
                     figure_text = ""
-                    for f_file in glob(os.path.join(ocr_path, 'figure_text', f'{page_number}_*.txt')):
+                    for f_file in glob(os.path.join(doc_path, 'figure_text', f'{page_number}_*.txt')):
                         with open(f_file, 'r', encoding='utf-8', errors='ignore') as f:
                             figure_text += f.read().strip() + "\n"
+
                     combined_text = f"{main_text}\n\n{table_text}\n\n{figure_text}".strip() or " "
                     text_with_prompt = f"Represent this document for retrieval: {combined_text}"
-                    page_index_path = f"{ocr_path}/{page_number}"
+                    page_index_path = f"{doc_path}/{page_number}"
                     all_page_texts.append(text_with_prompt)
                     all_page_index_paths.append(page_index_path)
                 except Exception as e:
-                    print(f"Error processing page {ocr_path}/{page_number}: {e}")
-        print(f"\nStep 2/3: Aggregated {len(all_page_texts)} pages, start batch embedding...")
-        if all_page_texts:
-            all_embeddings = self.model.encode(all_page_texts, batch_size=self.batch_size, show_progress_bar=True)
-            print("\nStep 3/3: Saving mappings and embeddings...")
-            for i, page_path in enumerate(all_page_index_paths):
-                self.path_to_id[page_path] = i
-                self.id_to_path[i] = page_path
-                self.embeddings.append(all_embeddings[i])
+                    pass
+
+        if not all_page_texts:
+            return 0
+
+        embeddings = local_model.encode(all_page_texts, batch_size=32, show_progress_bar=True)
+
+        device_name = device.replace(':', '_')
+        os.makedirs(temp_dir, exist_ok=True)
+        with open(os.path.join(temp_dir, f"{device_name}_paths.pkl"), 'wb') as f:
+            pickle.dump(all_page_index_paths, f)
+        np.save(os.path.join(temp_dir, f"{device_name}_embeddings.npy"), np.array(embeddings, dtype=np.float32))
+        return len(all_page_texts)
+
+    def _merge_results(self, temp_dir: str):
+        """Merge results from multiple GPUs"""
+        self.path_to_id, self.id_to_path, all_embeddings_list = {}, {}, []
+        offset = 0
+
+        device_files = sorted([f for f in os.listdir(temp_dir) if f.endswith("_embeddings.npy")])
+        for f_name in device_files:
+            device_name = f_name.replace("_embeddings.npy", "")
+            paths = pickle.load(open(os.path.join(temp_dir, f"{device_name}_paths.pkl"), 'rb'))
+            embeddings = np.load(os.path.join(temp_dir, f_name))
+
+            for i, path in enumerate(paths):
+                new_id = offset + i
+                self.path_to_id[path] = new_id
+                self.id_to_path[new_id] = path
+
+            all_embeddings_list.append(embeddings)
+            offset += len(paths)
+
+        if all_embeddings_list:
+            self.embeddings = np.vstack(all_embeddings_list)
+
+    def process_document_pages(self, ocr_dir: str) -> None:
+        """Process document pages and generate embeddings (multi-GPU supported)"""
+        doc_paths = self.get_document_paths(ocr_dir)
+
+        if self.multi_gpu_mode:
+            temp_dir = os.path.join(os.getcwd(), "temp_embeddings_bge")
+            os.makedirs(temp_dir, exist_ok=True)
+
+            num_gpus = len(self.devices)
+            docs_per_gpu = np.array_split(doc_paths, num_gpus)
+
+            process_func = partial(self._process_document_batch, model_name=self.model_name,
+                                   max_seq_length=self.max_seq_length, temp_dir=temp_dir)
+
+            with multiprocessing.Pool(processes=num_gpus) as pool:
+                results = pool.starmap(process_func, zip(docs_per_gpu, self.devices))
+
+            self._merge_results(temp_dir)
+
+        else:  # Single GPU mode
+            all_page_texts, all_page_index_paths = [], []
+            for doc_path in tqdm(doc_paths, desc="Processing documents"):
+                main_text_files = sorted(glob(os.path.join(doc_path, 'text', '*.txt')),
+                                         key=lambda x: int(os.path.basename(x).split('.')[0]))
+                for page_file in main_text_files:
+                    try:
+                        page_number = os.path.basename(page_file).split('.')[0]
+                        with open(page_file, 'r', encoding='utf-8', errors='ignore') as f:
+                            main_text = f.read().strip()
+                        table_text = ""
+                        for t_file in glob(os.path.join(doc_path, 'table_text', f'{page_number}_*.txt')):
+                            with open(t_file, 'r', encoding='utf-8', errors='ignore') as f:
+                                table_text += f.read().strip() + "\n"
+                        figure_text = ""
+                        for f_file in glob(os.path.join(doc_path, 'figure_text', f'{page_number}_*.txt')):
+                            with open(f_file, 'r', encoding='utf-8', errors='ignore') as f:
+                                figure_text += f.read().strip() + "\n"
+
+                        combined_text = f"{main_text}\n\n{table_text}\n\n{figure_text}".strip() or " "
+                        text_with_prompt = f"Represent this document for retrieval: {combined_text}"
+                        page_index_path = f"{doc_path}/{page_number}"
+                        all_page_texts.append(text_with_prompt)
+                        all_page_index_paths.append(page_index_path)
+                    except Exception as e:
+                        pass
+
+            if all_page_texts:
+                embeddings = self.model.encode(all_page_texts, batch_size=self.batch_size, show_progress_bar=True)
+                self.embeddings = np.array(embeddings, dtype=np.float32)
+                for i, path in enumerate(all_page_index_paths):
+                    self.path_to_id[path] = i
+                    self.id_to_path[i] = path
 
     def save_to_disk(self, output_dir: str) -> None:
-        """Save embeddings and mappings to disk"""
+        """Save embeddings, mappings, and FAISS index to disk"""
         os.makedirs(output_dir, exist_ok=True)
         with open(os.path.join(output_dir, 'path_to_id.pkl'), 'wb') as f: pickle.dump(self.path_to_id, f)
         with open(os.path.join(output_dir, 'id_to_path.pkl'), 'wb') as f: pickle.dump(self.id_to_path, f)
-        if self.embeddings:
+
+        if len(self.embeddings) > 0:
             embeddings_array = np.array(self.embeddings, dtype=np.float32)
             vector_dim = embeddings_array.shape[1]
             index = faiss.IndexFlatIP(vector_dim)
             faiss.normalize_L2(embeddings_array)
             index.add(embeddings_array)
             faiss.write_index(index, os.path.join(output_dir, 'vector.index'))
-            print(f"FAISS index created and saved. Vector dimension: {vector_dim}")
-        print(f"All data saved to: {output_dir}")
-        print(f"Total {len(self.path_to_id)} document pages indexed.")
 
     def load_from_disk(self, input_dir: str) -> None:
         """Load mappings and FAISS index from disk"""
-        print(f"Loading data from {input_dir} ...")
         with open(os.path.join(input_dir, 'path_to_id.pkl'), 'rb') as f:
             self.path_to_id = pickle.load(f)
         with open(os.path.join(input_dir, 'id_to_path.pkl'), 'rb') as f:
@@ -102,41 +220,36 @@ class DocumentPageEmbeddingSystem:
         index_path = os.path.join(input_dir, 'vector.index')
         if os.path.exists(index_path):
             self.index = faiss.read_index(index_path)
-            print(f"Successfully loaded FAISS index with {self.index.ntotal} vectors.")
         else:
-            raise FileNotFoundError(f"Error: vector.index file not found in {input_dir}.")
+            raise FileNotFoundError(f"Error: vector.index not found in {input_dir}.")
 
     def search_by_text(self, query_text: str, top_k: int = 10) -> List[Tuple[str, float]]:
-        """Efficient search in loaded FAISS index by text"""
-        if self.index is None:
-            raise ValueError("Index not loaded. Please call load_from_disk first.")
+        """Search efficiently in loaded FAISS index by text"""
+        if self.index is None: raise ValueError("Index not loaded. Call load_from_disk first.")
         if not query_text or not query_text.strip(): return []
         try:
-            query_with_prompt = f"Represent this document for retrieval: {query_text}"
-            query_embedding = self.model.encode(query_with_prompt)
-            query_norm = np.array([query_embedding], dtype=np.float32)
+            query_embedding = self.model.encode([query_text])
+            query_norm = np.array(query_embedding, dtype=np.float32)
             faiss.normalize_L2(query_norm)
+
             actual_top_k = min(top_k, self.index.ntotal)
             similarities, indices = self.index.search(query_norm, actual_top_k)
-            results = []
-            for i, idx in enumerate(indices[0]):
-                if idx != -1:
-                    results.append((self.id_to_path[idx], float(similarities[0][i])))
+
+            results = [(self.id_to_path[idx], float(sim)) for idx, sim in zip(indices[0], similarities[0]) if idx != -1]
             return results
         except Exception as e:
-            print(f"Error during search: {e}")
             return []
 
 # --- Wrapper Functions ---
 
-def embed_and_index_documents(txt_path: str, output_dir: str, device: str):
-    system = DocumentPageEmbeddingSystem(device=device)
-    doc_paths = system.read_folder_paths(txt_path)
-    print(f"Read {len(doc_paths)} document paths from {txt_path}")
-    system.process_document_pages(doc_paths)
+def embed_and_index_documents(ocr_dir: str, output_dir: str, devices: List[str]):
+    system = DocumentPageEmbeddingSystem(device=devices[0])
+    if len(devices) > 1:
+        system.enable_multi_gpu(devices)
+    system.process_document_pages(ocr_dir)
     system.save_to_disk(output_dir)
 
-def search_images(model_dir: str, query_text: str, top_k: int, device: str):
+def search_documents(model_dir: str, query_text: str, top_k: int, device: str):
     system = DocumentPageEmbeddingSystem(device=device)
     system.load_from_disk(model_dir)
     results = system.search_by_text(query_text, top_k=top_k)
@@ -146,56 +259,53 @@ def search_images(model_dir: str, query_text: str, top_k: int, device: str):
         print(f"  {i + 1}. Path: {path} (Similarity: {score:.4f})")
 
 def process_json_file(json_file_path: str, output_json_path: str, model_dir: str, top_k: int, device: str):
-    """Process JSON file, retrieve related document pages for each question and add to JSON"""
     system = DocumentPageEmbeddingSystem(device=device)
     system.load_from_disk(model_dir)
     with open(json_file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
-    print(f"Start processing {len(data)} JSON entries...")
     for item in tqdm(data, desc="Processing JSON"):
-        try:
-            question = item.get("question") or item.get("final_question")
-            if not question: continue
+        question = item.get("question") or item.get("final_question")
+        if question:
             results = system.search_by_text(question, top_k=top_k)
             item["retrieval_pages"] = [path for path, _ in results]
-        except Exception as e:
-            print(f"Error processing entry: {item}. Error: {e}")
     with open(output_json_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
-    print(f"Processing completed. Results saved to {output_json_path}")
 
 # --- Main Execution ---
 
 def main():
-    parser = argparse.ArgumentParser(description='BGE M3 Document Page Embedding and Retrieval System (Sentence-Transformers version)')
+    parser = argparse.ArgumentParser(description='BGE-M3 Document Page Embedding and Retrieval System (Multi-GPU)')
     parser.add_argument('--mode', type=str, choices=['embed', 'search', 'process_json'], required=True,
                         help='Mode: embed (embedding and indexing), search (interactive search), process_json (batch process JSON)')
-    parser.add_argument('--device', type=str, default='cuda', help='Device to use (e.g., cuda, cuda:0, cpu)')
+    parser.add_argument('--device', type=str, default='cuda:0', help='Main device or device used for search (e.g., cuda:0)')
+    parser.add_argument('--devices', type=str, nargs='*',
+                        help='[embed mode] List of GPU devices to use for embedding (e.g., cuda:0 cuda:1 cuda:2)')
+
     parser.add_argument('--output_dir', type=str,
                         help='[embed mode] Output directory for index, or [search/process_json mode] directory for loading index')
-    # Args for 'embed'
-    parser.add_argument('--txt_path', type=str, help='[embed mode] txt file containing document paths')
-    # Args for 'search'
+    parser.add_argument('--ocr_dir', type=str, help='[embed mode] OCR directory path')
     parser.add_argument('--query', type=str, help='[search mode] Query text')
-    # Args for 'process_json'
     parser.add_argument('--json_file', type=str, help='[process_json mode] Input JSON file')
     parser.add_argument('--output_json', type=str, help='[process_json mode] Output JSON file')
-    # General args
     parser.add_argument('--top_k', type=int, default=10, help='Number of most similar results to return')
     args = parser.parse_args()
 
     if args.mode == 'embed':
-        if not all([args.txt_path, args.output_dir]):
-            parser.error("Embed mode (--mode embed) requires --txt_path and --output_dir arguments")
-        embed_and_index_documents(args.txt_path, args.output_dir, args.device)
+        if not all([args.ocr_dir, args.output_dir]):
+            parser.error("Embed mode (--mode embed) requires --ocr_dir and --output_dir arguments")
+        devices = args.devices if args.devices else [args.device]
+        embed_and_index_documents(args.ocr_dir, args.output_dir, devices)
+
     elif args.mode == 'search':
         if not all([args.output_dir, args.query]):
             parser.error("Search mode (--mode search) requires --output_dir and --query arguments")
-        search_images(args.output_dir, args.query, args.top_k, args.device)
+        search_documents(args.output_dir, args.query, args.top_k, args.device)
+
     elif args.mode == 'process_json':
         if not all([args.output_dir, args.json_file, args.output_json]):
             parser.error("Process_json mode (--mode process_json) requires --output_dir, --json_file, and --output_json arguments")
         process_json_file(args.json_file, args.output_json, args.output_dir, args.top_k, args.device)
 
 if __name__ == "__main__":
+    set_multiprocessing_start_method()
     main()

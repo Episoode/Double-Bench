@@ -1,6 +1,0 @@
-defaults:
-  - base
-  - dataset: ptab
-  - _self_
-
-run-name: ptab-MDocAgent

@@ -1,6 +1,0 @@
-defaults:
-  - base
-  - dataset: ldu
-  - _self_
-
-run-name: ldu-MDocAgent

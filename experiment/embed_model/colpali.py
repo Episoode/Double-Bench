@@ -15,8 +15,8 @@ from colpali_engine.models import ColPali, ColPaliProcessor
 class ImageEmbeddingSystem:
     def __init__(
             self,
-            model_name: str = "/path/to/your/colpali-v1.3-merged",#vidore/colpali-v1.3-merged
-            device: str = "cuda:0",
+            model_name: str = "vidore/colpali-v1.3-merged",  # vidore/colpali-v1.3-merged
+            device: str = "cuda",
             batch_size: int = 16
     ):
         """Initialize the image embedding system"""
@@ -38,11 +38,43 @@ class ImageEmbeddingSystem:
         # Store raw embeddings
         self.original_embeddings = []
 
-    def read_folder_paths(self, txt_path: str) -> List[str]:
-        """Read folder paths from txt file"""
-        with open(txt_path, 'r') as f:
-            folder_paths = [line.strip() for line in f if line.strip()]
-        return folder_paths
+    def scan_directory_structure(self, root_dir: str) -> List[str]:
+        """
+        Scan the directory structure and return all document folders
+        Expected structure: root_dir/language/document_id/images
+        """
+        document_folders = []
+
+        if not os.path.exists(root_dir):
+            raise ValueError(f"Root directory does not exist: {root_dir}")
+
+        # Iterate through language folders
+        for language_folder in os.listdir(root_dir):
+            language_path = os.path.join(root_dir, language_folder)
+
+            # Skip if not a directory
+            if not os.path.isdir(language_path):
+                continue
+
+            # Iterate through document folders within each language folder
+            for document_folder in os.listdir(language_path):
+                document_path = os.path.join(language_path, document_folder)
+
+                # Skip if not a directory
+                if not os.path.isdir(document_path):
+                    continue
+
+                # Check if this document folder contains images
+                has_images = False
+                for ext in ["*.jpg", "*.jpeg", "*.png", "*.bmp"]:
+                    if glob(os.path.join(document_path, ext)):
+                        has_images = True
+                        break
+
+                if has_images:
+                    document_folders.append(document_path)
+
+        return document_folders
 
     def get_image_paths(self, folder_paths: List[str]) -> List[str]:
         """Get image paths from all folders"""
@@ -149,17 +181,34 @@ class ImageEmbeddingSystem:
 
 # --- Wrapper Functions ---
 
-def embed_and_index_images(txt_path: str, output_dir: str, device: str):
+def embed_and_index_images(root_dir: str, output_dir: str, device: str):
+    """
+    Embed and index images from a root directory structure
+    Expected structure: root_dir/language/document_id/images
+    """
     system = ImageEmbeddingSystem(device=device)
-    folder_paths = system.read_folder_paths(txt_path)
-    print(f"Read {len(folder_paths)} folder paths from {txt_path}")
-    image_paths = system.get_image_paths(folder_paths)
+
+    # Scan directory structure to find all document folders
+    document_folders = system.scan_directory_structure(root_dir)
+    print(f"Found {len(document_folders)} document folders in {root_dir}")
+
+    # Get all image paths from document folders
+    image_paths = system.get_image_paths(document_folders)
     print(f"Found {len(image_paths)} images")
+
+    if len(image_paths) == 0:
+        print("No images found. Please check your directory structure.")
+        return
+
+    # Process images and create embeddings
     system.batch_process_images(image_paths)
+
+    # Save everything to disk
     system.save_to_disk(output_dir)
 
 
 def search_images(model_dir: str, query_text: str, top_k: int, device: str):
+    """Search for images using text query"""
     system = ImageEmbeddingSystem(device=device)
     system.load_from_disk(model_dir)
     results = system.search_by_text(query_text, top_k=top_k)
@@ -201,29 +250,35 @@ def main():
     parser.add_argument('--device', type=str, default='cuda:0', help='Device to use (e.g., cuda:0, cuda:1)')
     parser.add_argument('--output_dir', type=str,
                         help='[embed mode] Output directory for index, or [search/process_json mode] directory for loading index')
+
     # Args for 'embed' mode
-    parser.add_argument('--txt_path', type=str, help='[embed mode] txt file containing image folder paths')
+    parser.add_argument('--root_dir', type=str,
+                        help='[embed mode] Root directory containing language/document_id/images structure')
+
     # Args for 'search' mode
     parser.add_argument('--query', type=str, help='[search mode] Query text')
+
     # Args for 'process_json' mode
     parser.add_argument('--json_file', type=str, help='[process_json mode] Input JSON file')
     parser.add_argument('--output_json', type=str, help='[process_json mode] Output JSON file')
+
     # General args
     parser.add_argument('--top_k', type=int, default=10, help='Number of most similar results to return')
 
     args = parser.parse_args()
 
     if args.mode == 'embed':
-        if not all([args.txt_path, args.output_dir]):
-            parser.error("Embed mode (--mode embed) requires --txt_path and --output_dir arguments.")
-        embed_and_index_images(args.txt_path, args.output_dir, args.device)
+        if not all([args.root_dir, args.output_dir]):
+            parser.error("Embed mode (--mode embed) requires --root_dir and --output_dir arguments.")
+        embed_and_index_images(args.root_dir, args.output_dir, args.device)
     elif args.mode == 'search':
         if not all([args.output_dir, args.query]):
             parser.error("Search mode (--mode search) requires --output_dir and --query arguments.")
         search_images(args.output_dir, args.query, args.top_k, args.device)
     elif args.mode == 'process_json':
         if not all([args.output_dir, args.json_file, args.output_json]):
-            parser.error("Process_json mode (--mode process_json) requires --output_dir, --json_file, and --output_json arguments.")
+            parser.error(
+                "Process_json mode (--mode process_json) requires --output_dir, --json_file, and --output_json arguments.")
         process_json_file(args.json_file, args.output_json, args.output_dir, args.top_k, args.device)
 
 

@@ -1,51 +1,71 @@
-import os
 import torch
-import faiss
+import os
 import numpy as np
+import faiss
 import pickle
+from PIL import Image
 from tqdm import tqdm
 from typing import List, Tuple, Dict
 from glob import glob
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 import argparse
-from sentence_transformers import SentenceTransformer
+import json
 
-class JinaImageEmbeddingSystem:
+
+class ImageEmbeddingSystem:
     def __init__(
             self,
-            model_name: str = "/path/to/your/jina-embeddings-v4",#jinaai/jina-embeddings-v4
+            model_name: str = "llamaindex/vdr-2b-multi-v1",
             device: str = "cuda",
-            batch_size: int = 32,
+            batch_size: int = 128
     ):
-        """Initialize the Jina V4-based image embedding system"""
+        """Initialize image embedding system"""
         self.model_name = model_name
         self.device = device
         self.batch_size = batch_size
 
-        print(f"Loading model: {self.model_name}...")
-        self.model = SentenceTransformer(
-            model_name,
-            trust_remote_code=True,  # Required for Jina V4
+        self.model = HuggingFaceEmbedding(
+            model_name=model_name,
             device=device,
-            model_kwargs={
-                'attn_implementation': 'flash_attention_2',
-                'torch_dtype': torch.float16
-            }
+            trust_remote_code=True,
         )
-        if 'cuda' in self.device:
-            self.model.half()
-        print("Model loaded.")
 
         self.path_to_id: Dict[str, int] = {}
         self.id_to_path: Dict[int, str] = {}
-        self.embeddings: List[np.ndarray] = []
+        self.embeddings: List[List[float]] = []
 
-        self.index = None
+    def scan_directory_structure(self, root_dir: str) -> List[str]:
+        """
+        Scan the directory structure and return all document folders
+        Expected structure: root_dir/language/document_id/images
+        """
+        document_folders = []
 
-    def read_folder_paths(self, txt_path: str) -> List[str]:
-        """Read folder paths from txt file"""
-        with open(txt_path, 'r') as f:
-            folder_paths = [line.strip() for line in f if line.strip()]
-        return folder_paths
+        if not os.path.exists(root_dir):
+            raise ValueError(f"Root directory does not exist: {root_dir}")
+
+        for language_folder in os.listdir(root_dir):
+            language_path = os.path.join(root_dir, language_folder)
+
+            if not os.path.isdir(language_path):
+                continue
+
+            for document_folder in os.listdir(language_path):
+                document_path = os.path.join(language_path, document_folder)
+
+                if not os.path.isdir(document_path):
+                    continue
+
+                has_images = False
+                for ext in ["*.jpg", "*.jpeg", "*.png", "*.bmp"]:
+                    if glob(os.path.join(document_path, ext)):
+                        has_images = True
+                        break
+
+                if has_images:
+                    document_folders.append(document_path)
+
+        return document_folders
 
     def get_image_paths(self, folder_paths: List[str]) -> List[str]:
         """Get all jpg image paths from the folders"""
@@ -55,135 +75,154 @@ class JinaImageEmbeddingSystem:
             image_paths.extend(jpg_files)
         return image_paths
 
-    def batch_process_images(self, image_paths: List[str]) -> None:
-        """
-        Batch process images using SentenceTransformer and generate embeddings.
-        The encode function can directly handle image paths.
-        """
-        print(f"Generating embeddings for {len(image_paths)} images using {self.model_name} ...")
-        all_embeddings = self.model.encode(
-            sentences=image_paths,
-            batch_size=self.batch_size,
-            task="retrieval",
-            show_progress_bar=True
-        )
-
-        for i, img_path in enumerate(image_paths):
-            self.path_to_id[img_path] = i
-            self.id_to_path[i] = img_path
-
-        self.embeddings = list(all_embeddings)
+    def process_images(self, image_paths: List[str]) -> None:
+        """Process images and generate embeddings"""
+        for img_path in tqdm(image_paths):
+            try:
+                with open(img_path, 'rb'):
+                    pass
+                embedding = self.model.get_image_embedding(img_path)
+                current_id = len(self.path_to_id)
+                self.path_to_id[img_path] = current_id
+                self.id_to_path[current_id] = img_path
+                self.embeddings.append(embedding)
+            except Exception as e:
+                print(f"Failed to process image {img_path}: {e}")
 
     def save_to_disk(self, output_dir: str) -> None:
-        """Save embeddings, mappings, and FAISS index to disk"""
+        """Save embeddings and mappings to disk"""
         os.makedirs(output_dir, exist_ok=True)
-
         with open(os.path.join(output_dir, 'path_to_id.pkl'), 'wb') as f:
             pickle.dump(self.path_to_id, f)
         with open(os.path.join(output_dir, 'id_to_path.pkl'), 'wb') as f:
             pickle.dump(self.id_to_path, f)
-
+        embeddings_array = np.array(self.embeddings, dtype=np.float32)
+        np.save(os.path.join(output_dir, 'embeddings.npy'), embeddings_array)
         if self.embeddings:
-            embeddings_array = np.array(self.embeddings, dtype=np.float32)
-            vector_dim = embeddings_array.shape[1]
-
+            vector_dim = len(self.embeddings[0])
             index = faiss.IndexFlatIP(vector_dim)
-            faiss.normalize_L2(embeddings_array)
-            index.add(embeddings_array)
+            normalized_embeddings = embeddings_array.copy()
+            faiss.normalize_L2(normalized_embeddings)
+            index.add(normalized_embeddings)
             faiss.write_index(index, os.path.join(output_dir, 'vector.index'))
-            print(f"FAISS index created and saved. Vector dimension: {vector_dim}")
-
         print(f"All data saved to: {output_dir}")
         print(f"Total images indexed: {len(self.path_to_id)}")
 
     def load_from_disk(self, input_dir: str) -> None:
-        """Load mappings and FAISS index from disk"""
-        print(f"Loading data from {input_dir} ...")
+        """Load embeddings and mappings from disk"""
         with open(os.path.join(input_dir, 'path_to_id.pkl'), 'rb') as f:
             self.path_to_id = pickle.load(f)
         with open(os.path.join(input_dir, 'id_to_path.pkl'), 'rb') as f:
             self.id_to_path = pickle.load(f)
+        self.embeddings = np.load(os.path.join(input_dir, 'embeddings.npy')).tolist()
+        print(f"Loaded embeddings for {len(self.path_to_id)} images from {input_dir}")
 
-        index_path = os.path.join(input_dir, 'vector.index')
-        if os.path.exists(index_path):
-            self.index = faiss.read_index(index_path)
-            print(f"Loaded FAISS index for {self.index.ntotal} images from {input_dir}.")
-        else:
-            raise FileNotFoundError("Error: vector.index file not found in the specified directory.")
+    def batch_cosine_similarity(self, query_vec: List[float], all_vecs: List[List[float]]) -> List[float]:
+        """Batch compute cosine similarity between query vector and all image vectors"""
+        query_tensor = torch.tensor(query_vec, dtype=torch.bfloat16).to(self.device)
+        all_tensors = torch.tensor(all_vecs, dtype=torch.bfloat16).to(self.device)
+        query_norm = torch.nn.functional.normalize(query_tensor.unsqueeze(0), p=2, dim=1)
+        all_norm = torch.nn.functional.normalize(all_tensors, p=2, dim=1)
+        similarities = torch.mm(query_norm, all_norm.t()).squeeze()
+        return similarities.cpu().tolist()
 
     def search_by_text(self, query_text: str, top_k: int = 5) -> List[Tuple[str, float]]:
-        """
-        Efficiently search for the most similar images using FAISS index by text.
-        """
-        if self.index is None:
-            raise ValueError("FAISS index not loaded. Please call load_from_disk first.")
+        """Search most similar images by text"""
+        if not query_text or not query_text.strip():
+            return []
+        try:
+            query_embedding = self.model.get_query_embedding(query_text)
+            if not self.embeddings or len(self.embeddings) == 0:
+                print("Warning: No available image embeddings")
+                return []
+            similarities = self.batch_cosine_similarity(query_embedding, self.embeddings)
+            actual_top_k = min(top_k, len(similarities))
+            top_indices = np.argsort(similarities)[::-1][:actual_top_k]
+            results = []
+            for idx in top_indices:
+                int_idx = int(idx)
+                image_path = self.id_to_path[int_idx]
+                similarity_score = similarities[int_idx]
+                results.append((image_path, float(similarity_score)))
+            return results
+        except Exception as e:
+            print(f"Error processing query '{query_text}': {e}")
+            return []
 
-        query_embedding = self.model.encode(
-            sentences=[query_text],
-            task="retrieval",
-            prompt_name="query"  # Use prompt optimized for retrieval
-        )
 
-        query_embedding_norm = np.array(query_embedding, dtype=np.float32)
-        faiss.normalize_L2(query_embedding_norm)
+def embed_and_index_images(root_dir: str, output_dir: str, device: str = "cuda"):
+    """
+    Embed and index images from a root directory structure
+    Expected structure: root_dir/language/document_id/images
+    """
+    system = ImageEmbeddingSystem(device=device)
 
-        distances, indices = self.index.search(query_embedding_norm, top_k)
+    document_folders = system.scan_directory_structure(root_dir)
+    print(f"Found {len(document_folders)} document folders in {root_dir}")
 
-        results = []
-        for i, idx in enumerate(indices[0]):
-            if idx != -1:
-                image_path = self.id_to_path[idx]
-                score = distances[0][i]
-                results.append((image_path, score))
+    image_paths = system.get_image_paths(document_folders)
+    print(f"Found {len(image_paths)} JPG images")
 
-        return results
+    if len(image_paths) == 0:
+        print("No images found. Please check your directory structure.")
+        return
 
-def embed_and_index_images(txt_path: str, output_dir: str, device: str = "cuda:0"):
-    """Main workflow: read folder paths from txt, embed all images, and create index"""
-    system = JinaImageEmbeddingSystem(device=device)
-    folder_paths = system.read_folder_paths(txt_path)
-    print(f"Read {len(folder_paths)} folder paths from {txt_path}.")
-    image_paths = system.get_image_paths(folder_paths)
-    print(f"Found {len(image_paths)} JPG images in these paths.")
-
-    system.batch_process_images(image_paths)
+    system.process_images(image_paths)
     system.save_to_disk(output_dir)
     return system
 
-def search_images(model_dir: str, query_text: str, top_k: int = 10, device: str = "cuda"):
-    """Main workflow: load existing index and search images"""
-    system = JinaImageEmbeddingSystem(device=device)
+
+def process_json_file(json_file_path: str, output_json_path: str, model_dir: str, top_k: int, device: str):
+    """Process JSON file, retrieve related images for each question and add to JSON"""
+    system = ImageEmbeddingSystem(device=device)
     system.load_from_disk(model_dir)
 
-    results = system.search_by_text(query_text, top_k=top_k)
+    with open(json_file_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
 
-    print(f"\nQuery: '{query_text}'")
-    print(f"Top {len(results)} results found:")
-    for i, (path, score) in enumerate(results):
-        print(f"  {i + 1}. Path: {path}")
-        print(f"     Similarity score: {score:.4f}")
+    print(f"Start processing {len(data)} JSON entries...")
 
-    return results
+    for item in tqdm(data, desc="Processing JSON"):
+        question = item.get("question") or item.get("final_question")
+        if question:
+            results = system.search_by_text(question, top_k=top_k)
+            retrieval_pages = [path for path, _ in results]
+            item["retrieval_pages"] = retrieval_pages
+
+    with open(output_json_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+    print(f"Processing finished. Results saved to {output_json_path}")
+
 
 def main():
-    """Main function to handle command line arguments"""
-    parser = argparse.ArgumentParser(description='Jina V4-based Image Embedding and Retrieval System')
-    parser.add_argument('--txt_path', type=str, required=True, help='Txt file containing folder paths')
-    parser.add_argument('--output_dir', type=str, required=True, help='Output directory for index and mappings')
-    parser.add_argument('--device', type=str, default='cuda', help='Device to use (e.g., cuda:0, cuda:1)')
-    parser.add_argument('--mode', type=str, choices=['embed', 'search'], required=True,
-                        help='Mode: embed (embedding and indexing) or search (search)')
-    parser.add_argument('--query', type=str, help='Query text for search mode')
-    parser.add_argument('--top_k', type=int, default=5, help='Number of top results to return in search mode')
+    """Main function for argument parsing"""
+    parser = argparse.ArgumentParser(description='Image Embedding and Retrieval System')
+
+    parser.add_argument('--mode', type=str, required=True, choices=['embed', 'process_json'],
+                        help='Operation mode: embed (embedding and indexing) or process_json (batch process JSON)')
+    parser.add_argument('--output_dir', type=str, required=True,
+                        help='[embed mode] Output directory for index, or [process_json mode] directory for loading index')
+    parser.add_argument('--device', type=str, default='cuda', help='Device to use (e.g. cuda, cuda:0, cuda:1)')
+
+    parser.add_argument('--root_dir', type=str,
+                        help='[embed mode] Root directory containing language/document_id/images structure')
+
+    parser.add_argument('--json_file', type=str, help='[process_json mode] Input JSON file')
+    parser.add_argument('--output_json', type=str, help='[process_json mode] Output JSON file')
+    parser.add_argument('--top_k', type=int, default=5, help='Number of most similar results to return')
 
     args = parser.parse_args()
 
     if args.mode == 'embed':
-        embed_and_index_images(args.txt_path, args.output_dir, args.device)
-    elif args.mode == 'search':
-        if not args.query:
-            parser.error("Search mode (--mode search) requires --query argument")
-        search_images(args.output_dir, args.query, args.top_k, args.device)
+        if not args.root_dir:
+            parser.error("Embed mode requires --root_dir argument")
+        embed_and_index_images(args.root_dir, args.output_dir, args.device)
+    elif args.mode == 'process_json':
+        if not all([args.json_file, args.output_json]):
+            parser.error("Process_json mode requires --json_file and --output_json arguments")
+        process_json_file(args.json_file, args.output_json, args.output_dir, args.top_k, args.device)
+
 
 if __name__ == "__main__":
     main()
