@@ -1,6 +1,6 @@
 
 
-# Double-Bench
+# Are We on the Right Way for Assessing Document Retrieval-Augmented Generation?
 
 <div align="center">
 📖<a href="http://arxiv.org/abs/2508.03644">Paper</a> | 🏠<a href="https://entroplay.ai/research/double-bench">Homepage</a> | 🤗<a href="https://huggingface.co/datasets/Episoode/Double-Bench">Huggingface</a>
